@@ -1,0 +1,779 @@
+/*
+Tutorial Code by Bahareh Bahmanabadi
+Email: bahmanabadi.bahareh@gmail.com
+https://code.earthengine.google.com/157ea523ac55247a71f419b850338706
+*/
+//*****************************************************************************************************
+
+//JM TEST
+// Define the region of interest (ROI) for Qazvin
+// Step 1: Load Sentinel-2 image collection for the selected date and region
+//Map.addLayer(field_3454)
+var SpringImages = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+  .filterBounds(roi_Qazvin)
+  .filterDate('2024-10-01', '2024-10-03')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
+
+// Step 2: Create a mosaic from the images in the collection
+var mosaicImage = SpringImages.mosaic().clip(roi_Qazvin);
+Map.addLayer(mosaicImage, {bands: ['B4', 'B3', 'B2'], min: 0, max: 3000}, 'Spring Sentinel-2', false);
+
+// Step 3: Stack the RGB bands (B4, B3, B2) into a single array band
+var stackedImage = mosaicImage.select(['B4', 'B3', 'B2']);
+
+// Visualize the stacked image
+Map.centerObject(roi_Qazvin, 10);
+
+// Step 4: Sample the stacked image for each class
+// Assume 'maize', 'hay', 'ayesh', 'buildup', 'bareland' are predefined FeatureCollections
+
+var maizeSamples = stackedImage.sampleRegions({
+  collection: maize, // Predefined FeatureCollection
+  properties: ['Class'],
+  scale: 10
+});
+
+var haySamples = stackedImage.sampleRegions({
+  collection: hay,
+  properties: ['Class'],
+  scale: 10
+});
+
+var ayeshSamples = stackedImage.sampleRegions({
+  collection: ayesh,
+  properties: ['Class'],
+  scale: 10
+});
+
+var buildupSamples = stackedImage.sampleRegions({
+  collection: buildup,
+  properties: ['Class'],
+  scale: 10
+});
+
+var barelandSamples = stackedImage.sampleRegions({
+  collection: bareland,
+  properties: ['Class'],
+  scale: 10
+});
+
+// Visualize sample regions on the map
+Map.addLayer(maize, {color: 'red'}, 'maize Sample Points');
+Map.addLayer(hay, {color: 'green'}, 'Hay Sample Points');
+Map.addLayer(ayesh, {color: 'blue'}, 'Ayesh Sample Points');
+Map.addLayer(buildup, {color: 'yellow'}, 'Buildup Sample Points');
+Map.addLayer(bareland, {color: 'purple'}, 'Bareland Sample Points');
+
+// Step 5: Calculate class statistics (mean and standard deviation)
+function calculateClassStatistics(samples) {
+  var bands = ['B4', 'B3', 'B2']; // Bands B4, B3, B2
+
+  var means = bands.map(function(band) {
+    return samples.reduceColumns(ee.Reducer.mean(), [band]).get('mean');
+  });
+
+  var stdDevs = bands.map(function(band) {
+    return samples.reduceColumns(ee.Reducer.stdDev(), [band]).get('stdDev');
+  });
+
+  return {
+    mean: ee.Array(means),
+    stdDev: ee.Array(stdDevs)
+  };
+}
+
+// Step 6: Jeffries-Matusita (J-M) Separability Index calculation
+function jeffriesMatusita(class1, class2) {
+  var stats1 = calculateClassStatistics(class1);
+  var stats2 = calculateClassStatistics(class2);
+
+  var mean1 = stats1.mean;
+  var mean2 = stats2.mean;
+  var stdDev1 = stats1.stdDev;
+  var stdDev2 = stats2.stdDev;
+
+  var meanDiff = mean1.subtract(mean2);
+  var stdDevSum = stdDev1.add(stdDev2);
+
+  var jmRed = meanDiff.get([0]).pow(2).divide(stdDevSum.get([0]).pow(2)).sqrt();
+  var jmGreen = meanDiff.get([1]).pow(2).divide(stdDevSum.get([1]).pow(2)).sqrt();
+  var jmBlue = meanDiff.get([2]).pow(2).divide(stdDevSum.get([2]).pow(2)).sqrt();
+
+  var jmAverage = ee.Number(jmRed.add(jmGreen).add(jmBlue)).divide(3);
+
+  // Cap the J-M value between 0 and 2
+  var limitedJm = jmAverage.min(2);
+  
+  return limitedJm;
+}
+
+// Step 7: Calculate and print J-M separability for class pairs
+var jm_maizeHay = jeffriesMatusita(maizeSamples, haySamples);
+var jm_maizeAyesh = jeffriesMatusita(maizeSamples, ayeshSamples);
+var jm_maizeBuildup = jeffriesMatusita(maizeSamples, buildupSamples);
+var jm_maizeBareland = jeffriesMatusita(maizeSamples, barelandSamples);
+var jm_hayAyesh = jeffriesMatusita(haySamples, ayeshSamples);
+var jm_hayBuildup = jeffriesMatusita(haySamples, buildupSamples);
+var jm_hayBareland = jeffriesMatusita(haySamples, barelandSamples);
+var jm_ayeshBuildup = jeffriesMatusita(ayeshSamples, buildupSamples);
+var jm_ayeshBareland = jeffriesMatusita(ayeshSamples, barelandSamples);
+var jm_buildupBareland = jeffriesMatusita(buildupSamples, barelandSamples);
+
+// Print the results
+print(' JM Separability between maize and Hay:', jm_maizeHay);
+print(' JM Separability between maize and Ayesh:', jm_maizeAyesh);
+print(' JM Separability between maize and Buildup:', jm_maizeBuildup);
+print(' JM Separability between maize and Bareland:', jm_maizeBareland);
+print(' JM Separability between Hay and Ayesh:', jm_hayAyesh);
+print(' JM Separability between Hay and Buildup:', jm_hayBuildup);
+print(' JM Separability between Hay and Bareland:', jm_hayBareland);
+print(' JM Separability between Ayesh and Buildup:', jm_ayeshBuildup);
+print(' JM Separability between Ayesh and Bareland:', jm_ayeshBareland);
+print(' JM Separability between Buildup and Bareland:', jm_buildupBareland);
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+//SVM-RADAR-NDVI,LAI,SAVI
+Map.centerObject(roi_Qazvin);
+
+
+// Define the time range
+var SpringStart = '2024-09-05';
+var SpringEnd = '2024-10-06';
+
+// Load Sentinel-2 data and calculate NDVI, SAVI, and LAI
+var s2Collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .map(function(image) {
+    var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+    var savi = image.expression(
+      '((NIR - Red) * (1 + L)) / (NIR + Red + L)', {
+        'NIR': image.select('B8'),
+        'Red': image.select('B4'),
+        'L': 0.5
+      }).rename('SAVI');
+    var lai = ndvi.multiply(3.618).subtract(0.118).rename('LAI');
+    return image.addBands([ndvi, savi, lai]);
+  })
+  .median() // Composite based on median values
+  .clip(roi_Qazvin);
+
+// Print the image with calculated indices
+print('Processed Sentinel-2 Image', s2Collection);
+
+// Load Sentinel-1 radar data
+var radarImage = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .select('VV')
+  .map(function(image) {
+    return image.focal_median(30, 'circle', 'meters'); // Despeckling
+  })
+  .median()
+  .clip(roi_Qazvin);
+
+// Combine NDVI, SAVI, LAI, and radar data into a single stack
+var stack = s2Collection.select(['NDVI', 'SAVI', 'LAI']).addBands(radarImage.rename('Radar'));
+//print('Stacked Image', stack);
+
+// Visualize NDVI, SAVI, and LAI
+//Map.addLayer(s2Collection.select('NDVI'), {min: 0, max: 1, palette: ['blue', 'white', 'green']}, 'NDVI');
+//Map.addLayer(s2Collection.select('SAVI'), {min: 0, max: 1, palette: ['yellow', 'orange', 'red']}, 'SAVI');
+//Map.addLayer(s2Collection.select('LAI'), {min: 0, max: 6, palette: ['purple', 'pink', 'red']}, 'LAI');
+
+// Prepare training data
+var training_data = maize.merge(hay).merge(ayesh).merge(buildup).merge(bareland);
+//print('Training Data', training_data);
+
+// Sample regions to collect training data
+var training = stack.sampleRegions({
+  collection: training_data,
+  properties: ['Class'],
+  scale: 10
+});
+
+// Train an SVM classifier
+var classifier = ee.Classifier.libsvm({
+  kernelType: 'RBF', // Radial Basis Function kernel
+  cost: 10,         // Regularization parameter (C)
+  gamma: 0.5        // Kernel coefficient
+}).train({
+  features: training,
+  classProperty: 'Class'
+});
+
+// Classify the stack using SVM
+var classified = stack.classify(classifier);
+
+// Add the classified map to the map viewer
+Map.addLayer(classified, {min: 0, max: 4, palette: ['yellow', 'green', 'blue', 'red', 'brown']}, 'SVM Classification (Spring)');
+
+// Print evaluation metrics
+print('Confusion Matrix-SVM', classifier.confusionMatrix());
+print('Kappa Coefficient-SVM', classifier.confusionMatrix().kappa());
+print('Overall Accuracy-SVM', classifier.confusionMatrix().accuracy());
+
+// Define the class labels and corresponding colors
+var classLabels = ['Maize', 'Alfa_Alfa', 'Ayesh', 'Bare_land', 'Buildup'];
+var classColors = ['yellow', 'green', 'blue', 'red', 'brown']; // Colors corresponding to each class
+
+// Create the legend
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map
+Map.add(legend);
+
+// Export the classified image as a GeoTIFF
+Export.image.toDrive({
+  image: classified,  // Your classified map
+  description: 'Classified_Map_svm',  // File name in your Google Drive
+  fileFormat: 'GeoTIFF',  // Export as GeoTIFF
+  region: roi_Qazvin,  // Define the region of interest for export (you can use the same region as the map)
+  scale: 10,  // Define the resolution in meters (adjust based on your data)
+  maxPixels: 1e8  // Define the maximum number of pixels (adjust for your map's size)
+});
+
+// Add the classified map layer for visualization
+Map.addLayer(classified, 
+  {min: 0, max: 4, palette: classColors}, 
+  'Classified Map'
+);
+
+// Now, add the legend (this is for visualization, not export)
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map (this won't be exported)
+Map.add(legend);
+
+
+// Area calculation
+var pixelArea = ee.Image.pixelArea();
+
+// Create masks for each class and calculate area
+var maizeArea = pixelArea.updateMask(classified.eq(0)).reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: roi_Qazvin,
+  scale: 10,
+  maxPixels: 1e13
+});
+
+var hayArea = pixelArea.updateMask(classified.eq(1)).reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: roi_Qazvin,
+  scale: 10,
+  maxPixels: 1e13
+});
+
+var ayeshArea = pixelArea.updateMask(classified.eq(2)).reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: roi_Qazvin,
+  scale: 10,
+  maxPixels: 1e13
+});
+
+// Convert areas to hectares
+var toHectares = function(area) {
+  return ee.Number(area).divide(10000);
+};
+
+// Print areas in hectares
+print('maize Area (hectares):', toHectares(maizeArea.get('area')));
+print('Hay Area (hectares):', toHectares(hayArea.get('area')));
+print('Ayesh Area (hectares):', toHectares(ayeshArea.get('area')));
+//*************************************************************************************
+
+//Random Forest-Radar, NDVI, SAVI, LAI
+Map.centerObject(roi_Qazvin);
+
+// Define the time range
+var SpringStart = '2024-09-05';
+var SpringEnd = '2024-10-06';
+
+// Load Sentinel-2 data and calculate NDVI, SAVI, and LAI
+var s2Collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .map(function(image) {
+    var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+    var savi = image.expression(
+      '((NIR - Red) * (1 + L)) / (NIR + Red + L)', {
+        'NIR': image.select('B8'),
+        'Red': image.select('B4'),
+        'L': 0.5
+      }).rename('SAVI');
+    var lai = ndvi.multiply(3.618).subtract(0.118).rename('LAI');
+    return image.addBands([ndvi, savi, lai]);
+  })
+  .median() // Composite based on median values
+  .clip(roi_Qazvin);
+
+// Print the image with calculated indices
+//print('Processed Sentinel-2 Image', s2Collection);
+
+// Load Sentinel-1 radar data
+var radarImage = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .select('VV')
+  .map(function(image) {
+    return image.focal_median(30, 'circle', 'meters'); // Despeckling
+  })
+  .median()
+  .clip(roi_Qazvin);
+
+// Combine NDVI, SAVI, LAI, and radar data into a single stack
+var stack = s2Collection.select(['NDVI', 'SAVI', 'LAI']).addBands(radarImage.rename('Radar'));
+//print('Stacked Image', stack);
+
+// Visualize NDVI, SAVI, and LAI
+//Map.addLayer(s2Collection.select('NDVI'), {min: 0, max: 1, palette: ['blue', 'white', 'green']}, 'NDVI');
+//Map.addLayer(s2Collection.select('SAVI'), {min: 0, max: 1, palette: ['yellow', 'orange', 'red']}, 'SAVI');
+//Map.addLayer(s2Collection.select('LAI'), {min: 0, max: 6, palette: ['purple', 'pink', 'red']}, 'LAI');
+
+// Prepare training data
+var training_data = maize.merge(hay).merge(ayesh).merge(buildup).merge(bareland);
+print('Training Data', training_data);
+
+// Sample training data
+var training = stack.sampleRegions({
+  collection: training_data,
+  properties: ['Class'],
+  scale: 10
+});
+
+// Train Random Forest classifier
+var classifier = ee.Classifier.smileRandomForest(100).train({
+  features: training,
+  classProperty: 'Class'
+});
+
+// Classify the stacked image
+var classified = stack.classify(classifier);
+Map.addLayer(classified, {min: 0, max: 4, palette: ['yellow', 'green', 'blue', 'red', 'brown']}, 'Classified Map(Spring)');
+print('Confusion Matrix-RF', classifier.confusionMatrix());
+print('Kappa Coefficient-RF', classifier.confusionMatrix().kappa());
+print('Overall Accuracy-RF', classifier.confusionMatrix().accuracy());
+
+
+
+// Define the class labels and corresponding colors
+var classLabels = ['Maize', 'Alfa_Alfa', 'Ayesh', 'Bare_land', 'Buildup'];
+var classColors = ['yellow', 'green', 'blue', 'red', 'brown']; // Colors corresponding to each class
+
+// Create the legend
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map
+Map.add(legend);
+
+// Export the classified image as a GeoTIFF
+Export.image.toDrive({
+  image: classified,  // Your classified map
+  description: 'Classified_Map_Random_forest',  // File name in your Google Drive
+  fileFormat: 'GeoTIFF',  // Export as GeoTIFF
+  region: roi_Qazvin,  // Define the region of interest for export (you can use the same region as the map)
+  scale: 10,  // Define the resolution in meters (adjust based on your data)
+  maxPixels: 1e8  // Define the maximum number of pixels (adjust for your map's size)
+});
+
+// Add the classified map layer for visualization
+Map.addLayer(classified, 
+  {min: 0, max: 4, palette: classColors}, 
+  'Classified Map'
+);
+
+// Now, add the legend (this is for visualization, not export)
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map (this won't be exported)
+Map.add(legend);
+
+
+
+// Calculate areas for maize, hay, and ayesh
+var pixelArea = ee.Image.pixelArea();
+
+// Define class masks
+var maizeMask = classified.eq(0); // Assuming maize is class 0
+var hayMask = classified.eq(1);   // Assuming hay is class 1
+var ayeshMask = classified.eq(2); // Assuming ayesh is class 2
+
+// Calculate areas for each class
+var calculateArea = function(mask) {
+  return pixelArea.updateMask(mask).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: roi_Qazvin,
+    scale: 10,
+    maxPixels: 1e13
+  }).get('area');
+};
+
+// Convert areas to hectares
+var toHectares = function(area) {
+  return ee.Number(area).divide(10000);
+};
+
+var maizeArea = toHectares(calculateArea(maizeMask));
+var hayArea = toHectares(calculateArea(hayMask));
+var ayeshArea = toHectares(calculateArea(ayeshMask));
+
+// Print areas
+print('Maize Area (hectares):', maizeArea);
+print('Hay Area (hectares):', hayArea);
+print('Ayesh Area (hectares):', ayeshArea);
+//******************************************************************************************************************
+
+//XGBOOST-RADAR-NDVI,LAI,SAVI
+// Center the map to the ROI
+Map.centerObject(roi_Qazvin);
+
+// Define the time range
+var SpringStart = '2024-09-05';
+var SpringEnd = '2024-10-06';
+
+// Load Sentinel-2 data and calculate NDVI, SAVI, and LAI
+var s2Collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .map(function(image) {
+    var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+    var savi = image.expression(
+      '((NIR - Red) * (1 + L)) / (NIR + Red + L)', {
+        'NIR': image.select('B8'),
+        'Red': image.select('B4'),
+        'L': 0.5
+      }).rename('SAVI');
+    var lai = ndvi.multiply(3.618).subtract(0.118).rename('LAI');
+    return image.addBands([ndvi, savi, lai]);
+  })
+  .median() // Composite based on median values
+  .clip(roi_Qazvin);
+
+// Print the image with calculated indices
+//print('Processed Sentinel-2 Image', s2Collection);
+
+// Load Sentinel-1 radar data
+var radarImage = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi_Qazvin)
+  .filterDate(SpringStart, SpringEnd)
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .select('VV')
+  .map(function(image) {
+    return image.focal_median(30, 'circle', 'meters'); // Despeckling
+  })
+  .median()
+  .clip(roi_Qazvin);
+
+// Combine NDVI, SAVI, LAI, and radar data into a single stack
+var stack = s2Collection.select(['NDVI', 'SAVI', 'LAI']).addBands(radarImage.rename('Radar'));
+//print('Stacked Image', stack);
+
+// Visualize NDVI, SAVI, and LAI
+//Map.addLayer(s2Collection.select('NDVI'), {min: 0, max: 1, palette: ['blue', 'white', 'green']}, 'NDVI');
+//Map.addLayer(s2Collection.select('SAVI'), {min: 0, max: 1, palette: ['yellow', 'orange', 'red']}, 'SAVI');
+//Map.addLayer(s2Collection.select('LAI'), {min: 0, max: 6, palette: ['purple', 'pink', 'red']}, 'LAI');
+
+// Prepare training data
+var training_data = maize.merge(hay).merge(ayesh).merge(buildup).merge(bareland);
+print('Training Data', training_data);
+
+var training = stack.sampleRegions({
+  collection: training_data,
+  properties: ['Class'],
+  scale: 10
+});
+
+// Train an XGBoost classifier
+var classifier = ee.Classifier.smileGradientTreeBoost({
+  numberOfTrees: 100,  // Specify number of trees
+  seed: 42            // Random seed for reproducibility
+}).train({
+  features: training,
+  classProperty: 'Class',
+  inputProperties: stack.bandNames()
+});
+
+// Classify the stack using the XGBoost model
+var classified = stack.classify(classifier);
+
+Map.addLayer(classified, 
+  {min: 0, max: 4, palette: ['yellow', 'green', 'blue', 'red', 'brown']}, 
+  'Classified Map (XGBoost)');
+
+// Evaluate the model
+var validation = classified.sampleRegions({
+  collection: training_data,
+  properties: ['Class'],
+  scale: 10
+});
+
+var confusionMatrix = validation.errorMatrix('Class', 'classification');
+print('Confusion Matrix-XGBoost:', confusionMatrix);
+print('Kappa Coefficient-XGBOOST:', confusionMatrix.kappa());
+print('Overall Accuracy-XGBOOST:', confusionMatrix.accuracy());
+
+
+// Define the class labels and corresponding colors
+var classLabels = ['Maize', 'Alfa_Alfa', 'Ayesh', 'Bare_land', 'Buildup'];
+var classColors = ['yellow', 'green', 'blue', 'red', 'brown']; // Colors corresponding to each class
+
+// Create the legend
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map
+Map.add(legend);
+
+// Export the classified image as a GeoTIFF
+Export.image.toDrive({
+  image: classified,  // Your classified map
+  description: 'Classified_Map_XGBOOST',  // File name in your Google Drive
+  fileFormat: 'GeoTIFF',  // Export as GeoTIFF
+  region: roi_Qazvin,  // Define the region of interest for export (you can use the same region as the map)
+  scale: 10,  // Define the resolution in meters (adjust based on your data)
+  maxPixels: 1e8  // Define the maximum number of pixels (adjust for your map's size)
+});
+
+// Add the classified map layer for visualization
+Map.addLayer(classified, 
+  {min: 0, max: 4, palette: classColors}, 
+  'Classified Map'
+);
+
+// Now, add the legend (this is for visualization, not export)
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+// Add the title to the legend
+var legendTitle = ui.Label('Classified Map Legend', {fontWeight: 'bold', fontSize: '16px'});
+legend.add(legendTitle);
+
+// Create color and label entries for the legend
+var makeRow = function(color, label) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '2px',
+      width: '20px',
+      height: '20px'
+    }
+  });
+  var label = ui.Label(label);
+  return ui.Panel({
+    widgets: [colorBox, label],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+// Add color and label entries for each class
+for (var i = 0; i < classLabels.length; i++) {
+  var row = makeRow(classColors[i], classLabels[i]);
+  legend.add(row);
+}
+
+// Add the legend to the map (this won't be exported)
+Map.add(legend);
+
+
+// Calculate areas for each class
+var pixelArea = ee.Image.pixelArea();
+
+var calculateArea = function(classId) {
+  return pixelArea.updateMask(classified.eq(classId)).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: roi_Qazvin,
+    scale: 10,
+    maxPixels: 1e13
+  }).get('area');
+};
+
+// Compute areas for each class
+var maizeArea = calculateArea(0); // maize
+var hayArea = calculateArea(1);   // Hay
+var ayeshArea = calculateArea(2); // Ayesh
+
+// Convert areas to hectares and print
+var toHectares = function(area) {
+  return ee.Number(area).divide(10000);
+};
+
+print('maize Area (hectares):', toHectares(maizeArea));
+print('Hay Area (hectares):', toHectares(hayArea));
+print('Ayesh Area (hectares):', toHectares(ayeshArea));
+
+//****************************************************************************************
